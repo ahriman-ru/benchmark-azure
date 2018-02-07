@@ -1,0 +1,382 @@
+﻿{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "rfdcluster",
+      "metadata": {
+        "description": "The name of the administrator account of the new VMs"
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "defaultValue": "RFDCkjlysqGfhjkm1",
+      "metadata": {
+        "description": "The password for the administrator account of the new VMs"
+      }
+    },
+    "dnsName": {
+      "type": "string",
+      "defaultValue": "rfd",
+      "metadata": {
+        "description": "Unique public dns name where the master node will be exposed"
+      }
+    },
+    "masterVMName": {
+      "type": "string",
+      "defaultValue": "master",
+      "metadata": {
+        "description": "The name of the Master VM"
+      }
+    },
+    "masterVMSize": {
+      "type": "string",
+      "defaultValue": "Standard_D1",
+      "allowedValues": [
+        "Standard_D1",
+        "Standard_D2",
+        "Standard_D3",
+        "Standard_D4"
+      ],
+      "metadata": {
+        "description": "The size of the Master VM"
+      }
+    },
+    "workerVMName": {
+      "type": "string",
+      "defaultValue": "worker",
+      "metadata": {
+        "description": "The base name of the worker nodes"
+      }
+    },
+    "workerVMSize": {
+      "type": "string",
+      "defaultValue": "Standard_D1",
+      "allowedValues": [
+        "Standard_D1",
+        "Standard_D2",
+        "Standard_D3",
+        "Standard_D4"
+      ],
+      "metadata": {
+        "description": "The size of the worker nodes"
+      }
+    },
+    "scaleNumber": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "This template creates N worker nodes. Use scaleNumber to specify that N"
+      }
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_GRS",
+        "Standard_RAGRS",
+        "Standard_ZRS",
+        "Premium_LRS"
+      ],
+      "metadata": {
+        "description": "Type of replication for storage account"
+      }
+    },
+    "templateBaseUrl": {
+      "type": "string",
+      "defaultValue": "https://github.com/ahriman-ru/rfd/blob/master",
+      "metadata": {
+        "description": "The location of all artifacts"
+      }
+    },
+    "publicIPAddressType": {
+      "type": "string",
+      "defaultValue": "Static",
+      "allowedValues": [
+        "Static",
+        "Dynamic"
+      ],
+      "metadata": {
+        "description": "Public IP Address allocation method"
+      }
+    }
+  },
+  "variables": {
+    "dnsPublicName": "[concat(parameters('dnsName'), '-', uniquestring(resourceGroup().id))]",
+    "imagePublisher": "OpenLogic",
+    "imageOffer": "CentOS",
+    "ubuntuOSVersion": "7.1",
+    "vmStorageAccountContainerName": "vhd",
+    "OSDiskName": "osdisk",
+    "masterVMNicName": "[concat(parameters('masterVMName'), '-nic01')]",
+    "workerVMNicName": "[concat(parameters('workerVMName'), '-nic')]",
+    "masterNsgName": "[concat(parameters('masterVMName'), '-nsg01')]",
+    "virtualMainNetworkName": "rfd-cluster",
+    "virtualMainSubnetName": "dse",
+    "networkSettings": {
+      "virtualNetworkName": "[variables('virtualMainNetworkName')]",
+      "addressPrefix": "10.0.0.0/16",
+      "subnet": {
+        "mainSubnet": {
+          "name": "[variables('virtualMainSubnetName')]",
+          "prefix": "10.0.0.0/24",
+          "vnet": "[variables('virtualMainNetworkName')]"
+        }
+      },
+      "statics": {
+        "workerRange": {
+          "base": "10.0.0.",
+          "start": 5
+        },
+        "master": "10.0.0.254"
+      }
+    },
+    "storageAccountName": "[concat(uniquestring(resourceGroup().id), 'bdsa01')]",
+    "publicIPAddressName": "[concat(parameters('masterVMName'), '-ip01')]",
+    "vnetId": "[resourceId('Microsoft.Network/virtualNetworks', variables('virtualMainNetworkName'))]",
+    "subnetRef": "[concat(variables('vnetId'), '/subnets/', variables('virtualMainSubnetName'))]",
+    "sshKeyPath": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+  },
+  "resources": [
+    {
+      "comments": "The storage account for VMs",
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[variables('storageAccountName')]",
+      "apiVersion": "2015-05-01-preview",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "accountType": "[parameters('storageAccountType')]"
+      }
+    },
+    {
+      "comments": "The virtual network for the cluster",
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "[variables('virtualMainNetworkName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[variables('networkSettings').addressPrefix]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('virtualMainSubnetName')]",
+            "properties": {
+              "addressPrefix": "[variables('networkSettings').subnet.mainSubnet.prefix]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "comments": "Public IP Address for the Master VM",
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2015-05-01-preview",
+      "name": "[variables('publicIPAddressName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "publicIPAllocationMethod": "[parameters('publicIPAddressType')]",
+        "dnsSettings": {
+          "domainNameLabel": "[parameters('dnsName')]"
+        }
+      }
+    },
+    {
+      "comments": "The network security group for the Master VM",
+      "name": "[variables('masterNsgName')]",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2016-09-01",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "default-allow-ssh",
+            "properties": {
+              "priority": 1000,
+              "sourceAddressPrefix": "*",
+              "protocol": "Tcp",
+              "destinationPortRange": "22",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "comments": "The network interface for the Master VM",
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[variables('masterVMNicName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]",
+        "[concat('Microsoft.Network/virtualNetworks/', variables('virtualMainNetworkName'))]",
+        "[concat('Microsoft.Network/networkSecurityGroups/', variables('masterNsgName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('networkSettings').statics.master]",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ],
+        "networkSecurityGroup": {
+          "id": "[resourceId(resourceGroup().name, 'Microsoft.Network/networkSecurityGroups', variables('masterNsgName'))]"
+        }
+      }
+    },
+    {
+      "comments": "The Master VM",
+      "apiVersion": "2017-12-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[parameters('masterVMName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('masterVMNicName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('masterVMSize')]"
+        },
+        "osProfile": {
+          "computerName": "[parameters('masterVMName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('imagePublisher')]",
+            "offer": "[variables('imageOffer')]",
+            "sku": "[variables('ubuntuOSVersion')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "managedDisk": {
+              "storageAccountType": "Standard_LRS"
+            },
+            "caching": "ReadWrite",
+            "createOption": "FromImage"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('masterVMNicName'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[concat(reference(concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName')), '2016-01-01').primaryEndpoints.blob)]"
+          }
+        }
+      }
+    },
+    {
+      "comments": "The network interfaces for the worker nodes",
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat(variables('workerVMNicName'), copyindex(1))]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/virtualNetworks/', variables('virtualMainNetworkName'))]"
+      ],
+      "copy": {
+        "name": "workerNicLoop",
+        "count": "[parameters('scaleNumber')]"
+      },
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[concat(variables('networkSettings').statics.workerRange.base, copyindex(variables('networkSettings').statics.workerRange.start))]",
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "comments": "The worker nodes",
+      "apiVersion": "2017-12-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat(parameters('workerVMName'), copyindex(1))]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('workerVMNicName'), copyindex(1))]"
+      ],
+      "copy": {
+        "name": "workerVMLoop",
+        "count": "[parameters('scaleNumber')]"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('workerVMSize')]"
+        },
+        "osProfile": {
+          "computerName": "[concat(parameters('workerVMName'), copyindex(1))]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('imagePublisher')]",
+            "offer": "[variables('imageOffer')]",
+            "sku": "[variables('ubuntuOSVersion')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "managedDisk": {
+              "storageAccountType": "Standard_LRS"
+            },
+            "caching": "ReadWrite",
+            "createOption": "FromImage"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('workerVMNicName'), copyindex(1)))]"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "masterFqdn": {
+      "value": "[reference(variables('publicIPAddressName')).dnsSettings.fqdn]",
+      "type": "string"
+    },
+    "masterIPAddress": {
+      "type": "string",
+      "value": "[reference(variables('publicIPAddressName')).IpAddress]"
+    },
+    "sshCommand": {
+      "type": "string",
+      "value": "[concat('ssh ', parameters('adminUsername'), '@', reference(variables('publicIPAddressName')).dnsSettings.fqdn)]"
+    }
+  }
+}
